@@ -1130,7 +1130,8 @@ def main():
         log.debug("Loaded config from %s", config_path)
 
     # CLI args override config file; fall back to defaults
-    sock = args.socket or cfg.get("socket", "/tmp/klippy_uds")
+    sock = os.path.expanduser(
+        args.socket or cfg.get("socket", "~/printer_data/comms/klippy.sock"))
     bridge = args.bridge or cfg.get("bridge", "screen")
     variant = args.variant or cfg.get("variant", "3Pro")
     led = args.led or cfg.get("led", "my_led")
