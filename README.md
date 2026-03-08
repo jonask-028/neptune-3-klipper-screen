@@ -48,12 +48,12 @@ python3 neptune_screen.py -b screen -v 3Pro -d
 
 ### Command-line options
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `-s`, `--socket` | `/tmp/klippy_uds` | Klipper Unix socket path |
-| `-b`, `--bridge` | `screen` | `serial_bridge` name from printer.cfg |
-| `-v`, `--variant` | `3Pro` | Neptune variant: `3Pro`, `3Plus`, `3Max` |
-| `-d`, `--debug` | off | Enable debug logging |
+| Option            | Default           | Description                              |
+| ----------------- | ----------------- | ---------------------------------------- |
+| `-s`, `--socket`  | `/tmp/klippy_uds` | Klipper Unix socket path                 |
+| `-b`, `--bridge`  | `screen`          | `serial_bridge` name from printer.cfg    |
+| `-v`, `--variant` | `3Pro`            | Neptune variant: `3Pro`, `3Plus`, `3Max` |
+| `-d`, `--debug`   | off               | Enable debug logging                     |
 
 ## Service management
 
