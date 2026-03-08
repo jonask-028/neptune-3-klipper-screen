@@ -10,7 +10,9 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 import argparse
+import configparser
 import logging
+import os
 import signal
 import sys
 import threading
@@ -58,11 +60,15 @@ class NeptuneScreen:
     """Manages all screen state and communication with Klipper."""
 
     def __init__(self, client, bridge_name, variant="3Pro",
-                 led_name="my_led"):
+                 led_name="my_led", heaters=None, gcodes_dir=None,
+                 update_interval=2):
         self.client = client
         self.bridge_name = bridge_name
         self.variant = variant
         self.led_name = led_name
+        self.heater_names = heaters or ["extruder", "heater_bed"]
+        self.gcodes_dir = gcodes_dir
+        self._update_interval = update_interval
         self._parser = DGUSParser()
         self._axis_unit = 1
         self._temp_and_rate_unit = 1
@@ -96,16 +102,17 @@ class NeptuneScreen:
             "serial_bridge_data", self._on_bridge_data)
 
         # Subscribe to printer objects we poll
-        result = self.client.subscribe_objects({
+        sub_objects = {
             "print_stats": None,
             "gcode_move": None,
             "fan": None,
             "toolhead": None,
-            "heater_bed": None,
-            "extruder": None,
             "virtual_sdcard": None,
             "configfile": None,
-        })
+        }
+        for h in self.heater_names:
+            sub_objects[h] = None
+        result = self.client.subscribe_objects(sub_objects)
         # Seed status cache with initial values
         initial = result.get("status", {})
         for key, val in initial.items():
@@ -129,7 +136,7 @@ class NeptuneScreen:
                 self._screen_update()
             except Exception:
                 log.exception("Error in screen update loop")
-            self._stop.wait(2.0)
+            self._stop.wait(self._update_interval)
 
     def stop(self):
         self._stop.set()
@@ -271,10 +278,12 @@ class NeptuneScreen:
             pass
         # Use gcode response to list files, or scan gcodes dir
         try:
-            import os
-            gcodes_dir = os.path.expanduser("~/printer_data/gcodes")
-            if not os.path.isdir(gcodes_dir):
-                gcodes_dir = os.path.expanduser("~/gcode_files")
+            if self.gcodes_dir:
+                gcodes_dir = os.path.expanduser(self.gcodes_dir)
+            else:
+                gcodes_dir = os.path.expanduser("~/printer_data/gcodes")
+                if not os.path.isdir(gcodes_dir):
+                    gcodes_dir = os.path.expanduser("~/gcode_files")
             if os.path.isdir(gcodes_dir):
                 files = []
                 for f in sorted(os.listdir(gcodes_dir)):
@@ -357,23 +366,21 @@ class NeptuneScreen:
     # ── Periodic update ──────────────────────────────────────────────
 
     def _screen_update(self):
-        s = self._get_status("print_stats", "extruder", "heater_bed",
-                             "gcode_move", "fan")
+        query_objs = ["print_stats", "gcode_move", "fan"] + self.heater_names
+        s = self._get_status(*query_objs)
         stats = s.get("print_stats", {})
-        extruder = s.get("extruder", {})
-        bed = s.get("heater_bed", {})
         move = s.get("gcode_move", {})
         fan = s.get("fan", {})
 
         # Temperatures
-        self.update_text("main.nozzletemp.txt",
-            "%.0f / %.0f" % (
-                extruder.get("temperature", 0),
-                extruder.get("target", 0)))
-        self.update_text("main.bedtemp.txt",
-            "%.0f / %.0f" % (
-                bed.get("temperature", 0),
-                bed.get("target", 0)))
+        for heater_name in self.heater_names:
+            h = s.get(heater_name, {})
+            temp_str = "%.0f / %.0f" % (
+                h.get("temperature", 0), h.get("target", 0))
+            if heater_name == "heater_bed":
+                self.update_text("main.bedtemp.txt", temp_str)
+            else:
+                self.update_text("main.nozzletemp.txt", temp_str)
 
         # LED status
         if self._is_led_on():
@@ -1063,33 +1070,82 @@ COMMAND_PROCESSORS = [
 
 # ── Entry point ─────────────────────────────────────────────────────
 
+def load_config(config_path):
+    """Load INI config file, return dict of settings."""
+    cfg = configparser.ConfigParser()
+    cfg.read(config_path)
+    settings = {}
+    if cfg.has_section("neptune_screen"):
+        s = cfg["neptune_screen"]
+        if "socket" in s:
+            settings["socket"] = s["socket"]
+        if "serial_bridge" in s:
+            settings["bridge"] = s["serial_bridge"]
+        if "variant" in s:
+            settings["variant"] = s["variant"]
+        if "led" in s:
+            settings["led"] = s["led"]
+        if "heater" in s:
+            settings["heater"] = [
+                h.strip() for h in s["heater"].split(",")]
+        if "gcodes_dir" in s:
+            settings["gcodes_dir"] = s["gcodes_dir"]
+        if "update_interval" in s:
+            settings["update_interval"] = s.getfloat("update_interval")
+        if "logging" in s:
+            settings["debug"] = s.getboolean("logging")
+    return settings
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Neptune 3 DGUS screen daemon for Klipper")
     parser.add_argument(
-        "-s", "--socket", default="/tmp/klippy_uds",
+        "-c", "--config", default=None,
+        help="Path to config file (default: neptune_screen.cfg next to script)")
+    parser.add_argument(
+        "-s", "--socket", default=None,
         help="Klipper Unix socket path (default: /tmp/klippy_uds)")
     parser.add_argument(
-        "-b", "--bridge", default="screen",
+        "-b", "--bridge", default=None,
         help="serial_bridge name from printer.cfg (default: screen)")
     parser.add_argument(
-        "-v", "--variant", default="3Pro",
+        "-v", "--variant", default=None,
         choices=["3Pro", "3Plus", "3Max"],
         help="Neptune variant (default: 3Pro)")
     parser.add_argument(
-        "-l", "--led", default="my_led",
+        "-l", "--led", default=None,
         help="LED name for toggle button (default: my_led)")
     parser.add_argument(
-        "-d", "--debug", action="store_true",
+        "-d", "--debug", action="store_true", default=None,
         help="Enable debug logging")
     args = parser.parse_args()
 
+    # Load config file (defaults to neptune_screen.cfg beside the script)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    config_path = args.config or os.path.join(script_dir, "neptune_screen.cfg")
+    cfg = {}
+    if os.path.isfile(config_path):
+        cfg = load_config(config_path)
+        log.debug("Loaded config from %s", config_path)
+
+    # CLI args override config file; fall back to defaults
+    sock = args.socket or cfg.get("socket", "/tmp/klippy_uds")
+    bridge = args.bridge or cfg.get("bridge", "screen")
+    variant = args.variant or cfg.get("variant", "3Pro")
+    led = args.led or cfg.get("led", "my_led")
+    heaters = cfg.get("heater", ["extruder", "heater_bed"])
+    gcodes_dir = cfg.get("gcodes_dir")
+    update_interval = cfg.get("update_interval", 2)
+    debug = args.debug if args.debug is not None else cfg.get("debug", False)
+
     logging.basicConfig(
-        level=logging.DEBUG if args.debug else logging.INFO,
+        level=logging.DEBUG if debug else logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
-    client = KlipperClient(args.socket)
-    screen = NeptuneScreen(client, args.bridge, args.variant, args.led)
+    client = KlipperClient(sock)
+    screen = NeptuneScreen(client, bridge, variant, led, heaters,
+                           gcodes_dir, update_interval)
 
     def shutdown(signum, frame):
         log.info("Shutting down...")
@@ -1101,7 +1157,7 @@ def main():
 
     while True:
         try:
-            log.info("Connecting to Klipper at %s ...", args.socket)
+            log.info("Connecting to Klipper at %s ...", sock)
             screen.start()
         except (ConnectionRefusedError, FileNotFoundError):
             log.warning("Klipper not ready, retrying in 5s...")
@@ -1113,9 +1169,9 @@ def main():
             screen.stop()
             time.sleep(5)
             # Re-create client for clean reconnect
-            client = KlipperClient(args.socket)
-            screen = NeptuneScreen(client, args.bridge, args.variant,
-                                   args.led)
+            client = KlipperClient(sock)
+            screen = NeptuneScreen(client, bridge, variant, led, heaters,
+                                   gcodes_dir, update_interval)
 
 
 if __name__ == "__main__":
