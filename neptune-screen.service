@@ -5,8 +5,8 @@ Wants=klipper.service
 
 [Service]
 Type=simple
-User=%i
-ExecStart=/usr/bin/python3 %h/neptune-3-klipper-screen/neptune_screen.py -b screen -v 3Pro
+User=NEPTUNE_USER
+ExecStart=/usr/bin/python3 NEPTUNE_INSTALL_DIR/neptune_screen.py
 Restart=always
 RestartSec=5
 
